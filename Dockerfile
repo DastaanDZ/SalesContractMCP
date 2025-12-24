@@ -23,4 +23,4 @@ COPY . .
 EXPOSE 8000
 
 # Run the server
-CMD ["python", "server.py"]
+CMD ["fastmcp", "run", "server.py:mcp", "--transport", "http", "--port", "8000", "--host", "0.0.0.0"]
