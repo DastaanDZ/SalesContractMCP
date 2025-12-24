@@ -1,0 +1,35 @@
+# Python bytecode/cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# virtual environment
+venv/
+.env/
+.venv/
+
+# Editor settings
+.vscode/
+.idea/
+.oca/
+
+# Docker/Python packaging artifacts
+*.egg-info/
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# dotenv environment files (if used)
+*.env
+.env.*
+
+# Logs (if your app generates them)
+*.log
+
+# Exclude all but key project files
+!Dockerfile
+!requirements.txt
+!server.py
