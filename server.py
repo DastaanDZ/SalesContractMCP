@@ -1,204 +1,179 @@
 from fastmcp import FastMCP, Context
 from pydantic import BaseModel, Field
-import json
 import os
 import io
-import re
+import json
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # PDF Libraries
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.units import inch
 
 load_dotenv()
 
-# Initialize Server
-mcp = FastMCP(name="od-pdf-drafter", version="2.0.0")
+# --------------------------------
+# 1. SETUP SUPABASE
+# --------------------------------
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+BUCKET_NAME = "od-files"  
+
+# Initialize Client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+mcp = FastMCP(name="od-pdf-drafter", version="3.0.0")
 
 # --------------------------------
-# Configuration
+# 2. HELPER: Cloud Operations
 # --------------------------------
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-CLAUSES_FILE = os.path.join(DATA_DIR, "clauses.json")
-os.makedirs(DATA_DIR, exist_ok=True)
-
-# --------------------------------
-# Helper: Versioning
-# --------------------------------
-def get_next_version_path(quote_number: str) -> str:
-    """
-    Determines the next filename version.
-    Example: If '12345.pdf' and '12345_v1.pdf' exist, returns path for '12345_v2.pdf'.
-    """
-    base_name = f"{quote_number}.pdf"
-    base_path = os.path.join(DATA_DIR, base_name)
-    
-    # If the base file doesn't exist, we can't draft an update
-    if not os.path.exists(base_path):
+def download_pdf_from_cloud(filename: str) -> io.BytesIO:
+    """Downloads PDF bytes from Supabase."""
+    try:
+        response = supabase.storage.from_(BUCKET_NAME).download(filename)
+        return io.BytesIO(response)
+    except Exception:
         return None
 
-    # Check for existing versions
+def upload_pdf_to_cloud(filename: str, file_data: io.BytesIO) -> str:
+    """Uploads PDF and returns the Public URL."""
+    # Reset pointer to start of file
+    file_data.seek(0)
+    
+    # Upload (file_options allow overwriting if needed, but we use versioning)
+    supabase.storage.from_(BUCKET_NAME).upload(
+        path=filename,
+        file=file_data.read(),
+        file_options={"content-type": "application/pdf"}
+    )
+    
+    # Get Public URL
+    public_url = supabase.storage.from_(BUCKET_NAME).get_public_url(filename)
+    return public_url
+
+def get_next_version_name(quote_number: str) -> str:
+    """
+    Checks Supabase for existing versions to find the next available name.
+    Note: This lists files in the bucket to count versions.
+    """
+    base_name = f"{quote_number}.pdf"
+    
+    # List files in bucket that match the quote number
+    files = supabase.storage.from_(BUCKET_NAME).list()
+    existing_names = [f['name'] for f in files]
+
+    if base_name not in existing_names:
+        return None # Original doesn't exist
+
     version = 1
     while True:
-        candidate_name = f"{quote_number}_v{version}.pdf"
-        candidate_path = os.path.join(DATA_DIR, candidate_name)
-        if not os.path.exists(candidate_path):
-            return candidate_path
+        candidate = f"{quote_number}_v{version}.pdf"
+        if candidate not in existing_names:
+            return candidate
         version += 1
 
-def get_latest_pdf_path(quote_number: str) -> str:
-    """
-    Finds the most recent version of the PDF to build upon.
-    (Optional: Currently I assume we always build upon the Original, 
-     but you can change this to build upon the latest version if needed).
-    """
-    return os.path.join(DATA_DIR, f"{quote_number}.pdf")
-
 # --------------------------------
-# Helper: PDF Generation
+# 3. HELPER: PDF Generation (Same as before)
 # --------------------------------
 def create_clause_page(clauses: list[tuple[str, str]]) -> io.BytesIO:
-    """
-    Uses ReportLab to generate a single PDF page containing the clauses.
-    Returns a bytes buffer.
-    """
     packet = io.BytesIO()
-    # Create a new PDF with Reportlab
     can = canvas.Canvas(packet, pagesize=letter)
-    width, height = letter
-    
-    # Start writing text from top-left
-    text_object = can.beginText(1 * inch, height - 1 * inch)
+    text_object = can.beginText(40, 750)
     text_object.setFont("Helvetica-Bold", 14)
     text_object.textLine("Addendum: Additional Clauses")
-    text_object.moveCursor(0, 20) # Add spacing
+    text_object.moveCursor(0, 20)
     
     for title, description in clauses:
-        # Title
         text_object.setFont("Helvetica-Bold", 12)
-        text_object.textLine(f"{title}")
-        
-        # Description (Simple wrapping logic handled by reportlab text object usually requires Paragraph flowables, 
-        # but for simplicity we will just assume short text or split lines manually. 
-        # For production, use ReportLab Platypus Paragraphs for auto-wrapping).
+        text_object.textLine(f"{title}:")
         text_object.setFont("Helvetica", 10)
         
-        # Simple word wrap simulation for this demo
         words = description.split()
         line = ""
         for word in words:
-            if len(line) + len(word) > 80: # approx characters per line
+            if len(line) + len(word) > 80:
                 text_object.textLine(line)
                 line = ""
             line += word + " "
         text_object.textLine(line)
-        text_object.moveCursor(0, 15) # Space between clauses
+        text_object.moveCursor(0, 15)
 
     can.drawText(text_object)
     can.save()
-    
     packet.seek(0)
     return packet
 
-# --------------------------------
-# Helper: Clause Logic
-# --------------------------------
-def load_clauses() -> dict[str, str]:
+# Load clauses from local file (keep clauses.json in repo)
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+CLAUSES_FILE = os.path.join(DATA_DIR, "clauses.json")
+def load_clauses():
     if not os.path.exists(CLAUSES_FILE): return {}
-    with open(CLAUSES_FILE, "r", encoding="utf-8") as f: return json.load(f)
+    with open(CLAUSES_FILE, "r") as f: return json.load(f)
 
 # --------------------------------
-# The Tool
+# 4. THE TOOL
 # --------------------------------
 @mcp.tool(
     name="draft_pdf_od",
-    description="Append clauses to an existing PDF Quote. Handles versioning automatically.",
+    description="Append clauses to a PDF quote stored in Supabase Cloud.",
 )
 async def draft_pdf_od(ctx: Context, quote_number: str, user_query: str):
-    """
-    Args:
-        quote_number: The ID of the file (e.g. "Q-100")
-        user_query: The user's request (e.g. "Add Auto Renewal")
-    """
-
-    # 1. Validate File Existence
-    original_path = os.path.join(DATA_DIR, f"{quote_number}.pdf")
-    if not os.path.exists(original_path):
+    
+    # A. Check original file in Cloud
+    original_filename = f"{quote_number}.pdf"
+    original_file_stream = download_pdf_from_cloud(original_filename)
+    
+    if not original_file_stream:
         return {
-            "content": [{"type": "text", "text": f"❌ File not found: {original_path}"}],
+            "content": [{"type": "text", "text": f"❌ Could not find '{original_filename}' in Supabase bucket '{BUCKET_NAME}'."}],
             "isError": True
         }
 
-    # 2. Identify Clauses (Logic from previous steps)
+    # B. Identify Clauses
     clause_db = load_clauses()
-    available_titles = list(clause_db.keys())
-    matched_titles = [t for t in available_titles if t.lower() in user_query.lower()]
+    available = list(clause_db.keys())
+    matched = [t for t in available if t.lower() in user_query.lower()]
+    
+    if not matched:
+        # Simple elicitation fallback
+        return {"content": [{"type": "text", "text": f"❌ No clauses found in query. Available: {', '.join(available)}"}]}
+    
+    clauses_to_add = [(t, clause_db[t]) for t in matched]
 
-    # --- AMBIGUITY CHECK ---
-    if not matched_titles:
-        options_str = ", ".join(available_titles)
-        class ClauseSelection(BaseModel):
-            selected_clause: str = Field(..., description=f"Choose one: {options_str}")
-
-        await ctx.log.info(f"Ambiguity detected for quote {quote_number}")
-        result = await ctx.elicit(
-            message=f"I found Quote {quote_number}, but I didn't recognize a clause in '{user_query}'.\nOptions: {options_str}",
-            response_type=ClauseSelection
-        )
-        if result.action != "accept":
-            return {"content": [{"type": "text", "text": "🚫 Cancelled."}]}
-        
-        # Validate selection
-        sel = result.data.selected_clause
-        found = next((t for t in available_titles if t.lower() == sel.lower()), None)
-        if not found: return {"content": [{"type": "text", "text": "❌ Invalid clause."}]}
-        matched_titles = [found]
-
-    # Prepare data for PDF generation
-    clauses_to_add = [(title, clause_db[title]) for title in matched_titles]
-
-    # 3. Process PDF (Merge Logic)
     try:
-        # A. Create the new page with clauses
-        new_page_packet = create_clause_page(clauses_to_add)
-        new_page_pdf = PdfReader(new_page_packet)
-
-        # B. Read the original PDF
-        # Note: Depending on requirements, we either load the Original OR the latest Version
-        # Here we load the Original base file.
-        existing_pdf = PdfReader(original_path)
+        # C. Merge PDFs
+        new_page = PdfReader(create_clause_page(clauses_to_add))
+        existing_pdf = PdfReader(original_file_stream)
         output = PdfWriter()
 
-        # Add all existing pages
         for page in existing_pdf.pages:
             output.add_page(page)
+        output.add_page(new_page.pages[0])
 
-        # Add the new "Clauses" page
-        output.add_page(new_page_pdf.pages[0])
-
-        # 4. Save Version
-        output_filename = get_next_version_path(quote_number)
-        with open(output_filename, "wb") as f:
-            output.write(f)
-
-        new_filename = os.path.basename(output_filename)
+        # D. Save to Stream
+        final_stream = io.BytesIO()
+        output.write(final_stream)
         
+        # E. Upload Version to Cloud
+        new_filename = get_next_version_name(quote_number)
+        public_url = upload_pdf_to_cloud(new_filename, final_stream)
+
         return {
             "content": [
                 {
                     "type": "text", 
-                    "text": f"✅ Success! Created new version: {new_filename}\n\nAdded Clauses:\n" + ", ".join(matched_titles)
+                    "text": f"✅ Success! Version '{new_filename}' created."
+                },
+                {
+                    "type": "text",
+                    "text": f"📄 View/Download here: {public_url}"
                 }
             ]
         }
 
     except Exception as e:
-        return {
-            "content": [{"type": "text", "text": f"❌ PDF Processing Error: {str(e)}"}],
-            "isError": True
-        }
+        return {"content": [{"type": "text", "text": f"❌ Error: {str(e)}"}], "isError": True}
 
 if __name__ == "__main__":
     mcp.run(transport="http", port=8000)
