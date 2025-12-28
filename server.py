@@ -201,6 +201,85 @@ async def draft_docx_od(
         return {"content": [{"type": "text", "text": f"❌ Error: {str(e)}"}], "isError": True}
 
 
+@mcp.tool(
+    name="draft_edit_docx_od",
+    description="Extend or Edit the 'Applicable Agreement' date in the latest version of the OD.",
+)
+async def draft_edit_docx_od(
+    ctx: Context, 
+    quote_number: Annotated[str, "The ID of the quote"], 
+    date: Annotated[str, "The date in the format '28-AUG-2018'"],
+):
+    response = (
+        supabase
+        .table("SALES_CONTRACT")
+        .select("VALUE")
+        .eq("CPQ-NUMBER",quote_number)
+        .eq("SECTION","Applicable Agreement")
+        .execute()
+    )
+    
+    data = response.data
+    print(data[0]['VALUE'])
+    current_date_doc = data[0]['VALUE']
+
+    # 2. Get LATEST Version (Auto-resolution)
+    latest_name, stream = get_latest_file_content(quote_number)
+    if not stream:
+        return {"content": [{"type": "text", "text": f"❌ No files found for Quote {quote_number}"}], "isError": True}
+
+    await ctx.info(f"Editing latest file: {latest_name}")
+
+    # 3. Edit & Check Duplicates
+    try:
+
+        doc = Document(stream)
+
+        found_section = False
+        replaced = False
+
+        for para in doc.paragraphs:
+            text = para.text
+
+            # Step 1: Find "Applicable Agreement" (case-insensitive)
+            if not found_section and re.search(r"applicable\s+agreement", text, re.IGNORECASE):
+                found_section = True
+                continue
+
+            # Step 2: After section found, replace date
+            if found_section and not replaced and current_date_doc in text:
+                para.text = text.replace(current_date_doc, date)
+                replaced = True
+                break   # stop after first replacement
+        
+        # Save & Upload
+
+        public_url = "NO new version created."
+
+        if replaced:
+            out = io.BytesIO()
+            doc.save(out)
+            public_url = upload_new_version(quote_number, out)
+
+            response = (
+                supabase
+                .table("SALES_CONTRACT")
+                .update({"VALUE":date})
+                .eq("CPQ-NUMBER",quote_number)
+                .eq("SECTION","Applicable Agreement")
+                .execute()
+            )
+
+        return {
+            "content": [
+                {"type": "text", "text": f"✅ Updated date in the OD. New version created."},
+                {"type": "text", "text": f"📄 View: {public_url}"}
+            ]
+        }
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"❌ Error: {str(e)}"}], "isError": True}
+
+
 # @mcp.tool(
 #     name="add_line_item",
 #     description="Add a row to the pricing table in the latest OD version.",
