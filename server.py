@@ -148,57 +148,57 @@ def row_exists(doc: Document, item_name: str, price: str) -> bool:
 # 5. TOOLS
 # --------------------------------
 
-# @mcp.tool(
-#     name="draft_docx_od",
-#     description="Append a legal clause to the latest version of the OD.",
-# )
-# async def draft_docx_od(
-#     ctx: Context, 
-#     quote_number: Annotated[str, "The ID of the quote"], 
-#     clause_name: Annotated[str, "Exact name of the clause"]
-# ):
-#     # 1. Validate Clause Name
-#     clause_db = load_clauses()
-#     found_key = next((k for k in clause_db.keys() if k.lower() in clause_name.lower()), None)
+@mcp.tool(
+    name="draft_docx_od",
+    description="Append a legal clause to the latest version of the OD.",
+)
+async def draft_docx_od(
+    ctx: Context, 
+    quote_number: Annotated[str, "The ID of the quote"], 
+    clause_name: Annotated[str, "Exact name of the clause"]
+):
+    # 1. Validate Clause Name
+    clause_db = load_clauses()
+    found_key = next((k for k in clause_db.keys() if k.lower() in clause_name.lower()), None)
     
-#     if not found_key:
-#         available = ", ".join(clause_db.keys())
-#         return {"content": [{"type": "text", "text": f"❌ Clause '{clause_name}' not found. Options: {available}"}], "isError": True}
+    if not found_key:
+        available = ", ".join(clause_db.keys())
+        return {"content": [{"type": "text", "text": f"❌ Clause '{clause_name}' not found. Options: {available}"}], "isError": True}
 
-#     # 2. Get LATEST Version (Auto-resolution)
-#     latest_name, stream = get_latest_file_content(quote_number)
-#     if not stream:
-#         return {"content": [{"type": "text", "text": f"❌ No files found for Quote {quote_number}"}], "isError": True}
+    # 2. Get LATEST Version (Auto-resolution)
+    latest_name, stream = get_latest_file_content(quote_number)
+    if not stream:
+        return {"content": [{"type": "text", "text": f"❌ No files found for Quote {quote_number}"}], "isError": True}
 
-#     await ctx.info(f"Editing latest file: {latest_name}")
+    await ctx.info(f"Editing latest file: {latest_name}")
 
-#     # 3. Edit & Check Duplicates
-#     try:
-#         doc = Document(stream)
+    # 3. Edit & Check Duplicates
+    try:
+        doc = Document(stream)
         
-#         # --- IDEMPOTENCY CHECK ---
-#         if clause_exists(doc, found_key):
-#              return {
-#                 "content": [{"type": "text", "text": f"⚠️ Clause '{found_key}' already exists in {latest_name}. No changes made."}]
-#             }
+        # --- IDEMPOTENCY CHECK ---
+        if clause_exists(doc, found_key):
+             return {
+                "content": [{"type": "text", "text": f"⚠️ Clause '{found_key}' already exists in {latest_name}. No changes made."}]
+            }
 
-#         # Apply Change
-#         doc.add_heading(found_key, level=2)
-#         doc.add_paragraph(clause_db[found_key])
+        # Apply Change
+        doc.add_heading(found_key, level=2)
+        doc.add_paragraph(clause_db[found_key])
         
-#         # Save & Upload
-#         out = io.BytesIO()
-#         doc.save(out)
-#         public_url = upload_new_version(quote_number, out)
+        # Save & Upload
+        out = io.BytesIO()
+        doc.save(out)
+        public_url = upload_new_version(quote_number, out)
         
-#         return {
-#             "content": [
-#                 {"type": "text", "text": f"✅ Added '{found_key}'. New version created."},
-#                 {"type": "text", "text": f"📄 View: {public_url}"}
-#             ]
-#         }
-#     except Exception as e:
-#         return {"content": [{"type": "text", "text": f"❌ Error: {str(e)}"}], "isError": True}
+        return {
+            "content": [
+                {"type": "text", "text": f"✅ Added '{found_key}'. New version created."},
+                {"type": "text", "text": f"📄 View: {public_url}"}
+            ]
+        }
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"❌ Error: {str(e)}"}], "isError": True}
 
 
 # @mcp.tool(
