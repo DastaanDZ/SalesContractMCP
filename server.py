@@ -354,6 +354,9 @@ async def add_line_item(
 ):
     # --- 1. ROBUST PARAMETER CHECK (Replaces Elicitation) ---
     # Since Cline doesn't support 'elicit', we just return a helpful message
+    if price == "0.00" or price == "$0.00" or price == "0" or price == "$0":
+        return "⚠️ Missing details. Please try again providing Item Name, Description, and Price."
+
     if not all([item_name, description, price]):
         missing = []
         if not item_name: missing.append("item_name")
