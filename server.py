@@ -275,13 +275,13 @@ async def add_line_item(
 ):
     # --- 1. ROBUST PARAMETER CHECK (Replaces Elicitation) ---
     # Since Cline doesn't support 'elicit', we just return a helpful message
-    if not all([item_name, description, price]):
-        missing = []
-        if not item_name: missing.append("item_name")
-        if not description: missing.append("description")
-        if not price: missing.append("price")
+    # if not all([item_name, description, price]):
+    #     missing = []
+    #     if not item_name: missing.append("item_name")
+    #     if not description: missing.append("description")
+    #     if not price: missing.append("price")
         
-        return f"⚠️ Missing details: {', '.join(missing)}. Please try again providing Item Name, Description, and Price."
+    #     return f"⚠️ Missing details: {', '.join(missing)}. Please try again providing Item Name, Description, and Price."
 
     # 2. Get File
     latest_name, stream = get_latest_file_content(quote_number)
