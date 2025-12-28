@@ -201,6 +201,67 @@ async def draft_docx_od(
         return {"content": [{"type": "text", "text": f"❌ Error: {str(e)}"}], "isError": True}
 
 
+# @mcp.tool(
+#     name="add_line_item",
+#     description="Add a row to the pricing table in the latest OD version.",
+# )
+# async def add_line_item(
+#     ctx: Context, 
+#     quote_number: Annotated[str, "The ID of the quote"],
+#     item_name: Annotated[str, "Name of service"] = None, 
+#     description: Annotated[str, "Description"] = None, 
+#     price: Annotated[str, "Price"] = None
+# ):
+#     # 1. Elicitation
+#     if not all([item_name, description, price]):
+#         await ctx.info(f"Triggering elicitation for Quote {quote_number}")
+#         result = await ctx.elicit(
+#             message=f"I need details to add a row to Quote {quote_number}.",
+#             response_type=LineItemInput
+#         )
+#         if result.action != "accept": return "Cancelled."
+#         item_name, description, price = result.data.item_name, result.data.description, result.data.price
+
+#     # 2. Get LATEST Version
+#     latest_name, stream = get_latest_file_content(quote_number)
+#     if not stream:
+#         return {"content": [{"type": "text", "text": f"❌ Quote {quote_number} not found."}], "isError": True}
+
+#     await ctx.info(f"Editing latest file: {latest_name}")
+
+#     # 3. Edit & Check Duplicates
+#     try:
+#         doc = Document(stream)
+#         if not doc.tables: return "❌ No tables found."
+        
+#         # --- IDEMPOTENCY CHECK ---
+#         if row_exists(doc, item_name, price):
+#              return {
+#                 "content": [{"type": "text", "text": f"⚠️ Row '{item_name}' ({price}) already exists in {latest_name}. No changes made."}]
+#             }
+
+#         # Add Row
+#         table = doc.tables[0]
+#         row = table.add_row()
+#         row.cells[0].text = item_name
+#         row.cells[1].text = description
+#         row.cells[2].text = price
+
+#         # Save & Upload
+#         out = io.BytesIO()
+#         doc.save(out)
+#         public_url = upload_new_version(quote_number, out)
+
+#         return {
+#             "content": [
+#                 {"type": "text", "text": f"✅ Added row '{item_name}'. New version created."},
+#                 {"type": "text", "text": f"📄 View: {public_url}"}
+#             ]
+#         }
+#     except Exception as e:
+#         return {"content": [{"type": "text", "text": f"❌ Error: {str(e)}"}], "isError": True}
+
+
 @mcp.tool(
     name="add_line_item",
     description="Add a row to the pricing table in the latest OD version.",
@@ -212,54 +273,45 @@ async def add_line_item(
     description: Annotated[str, "Description"] = None, 
     price: Annotated[str, "Price"] = None
 ):
-    # 1. Elicitation
+    # --- 1. ROBUST PARAMETER CHECK (Replaces Elicitation) ---
+    # Since Cline doesn't support 'elicit', we just return a helpful message
     if not all([item_name, description, price]):
-        await ctx.info(f"Triggering elicitation for Quote {quote_number}")
-        result = await ctx.elicit(
-            message=f"I need details to add a row to Quote {quote_number}.",
-            response_type=LineItemInput
-        )
-        if result.action != "accept": return "Cancelled."
-        item_name, description, price = result.data.item_name, result.data.description, result.data.price
+        missing = []
+        if not item_name: missing.append("item_name")
+        if not description: missing.append("description")
+        if not price: missing.append("price")
+        
+        return f"⚠️ Missing details: {', '.join(missing)}. Please try again providing Item Name, Description, and Price."
 
-    # 2. Get LATEST Version
+    # 2. Get File
     latest_name, stream = get_latest_file_content(quote_number)
     if not stream:
-        return {"content": [{"type": "text", "text": f"❌ Quote {quote_number} not found."}], "isError": True}
+        return f"❌ Quote {quote_number} not found."
 
-    await ctx.info(f"Editing latest file: {latest_name}")
+    await ctx.info(f"Adding row '{item_name}' to {latest_name}")
 
-    # 3. Edit & Check Duplicates
+    # 3. Edit
     try:
         doc = Document(stream)
-        if not doc.tables: return "❌ No tables found."
+        if not doc.tables: return "❌ No tables found in document."
         
-        # --- IDEMPOTENCY CHECK ---
         if row_exists(doc, item_name, price):
-             return {
-                "content": [{"type": "text", "text": f"⚠️ Row '{item_name}' ({price}) already exists in {latest_name}. No changes made."}]
-            }
+             return f"⚠️ Row '{item_name}' already exists in {latest_name}. No changes made."
 
-        # Add Row
         table = doc.tables[0]
         row = table.add_row()
         row.cells[0].text = item_name
         row.cells[1].text = description
         row.cells[2].text = price
 
-        # Save & Upload
         out = io.BytesIO()
         doc.save(out)
         public_url = upload_new_version(quote_number, out)
 
-        return {
-            "content": [
-                {"type": "text", "text": f"✅ Added row '{item_name}'. New version created."},
-                {"type": "text", "text": f"📄 View: {public_url}"}
-            ]
-        }
+        return f"✅ Added row '{item_name}'. View: {public_url}"
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"❌ Error: {str(e)}"}], "isError": True}
-
+        return f"❌ Error: {str(e)}"
+    
+    
 if __name__ == "__main__":
     mcp.run(transport="http", port=8000)
