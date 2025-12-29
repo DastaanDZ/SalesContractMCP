@@ -8,6 +8,8 @@ import re
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from docx import Document
+from datetime import datetime
+from dateutil import parser
 
 load_dotenv()
 
@@ -118,7 +120,99 @@ def upload_new_version(quote_number: str, stream: io.BytesIO) -> str:
         
     except Exception as e:
         raise Exception(f"Upload failed: {e}")
+    
+# --------------------------------
+# HELPER: Currency Math & Parsing
+# --------------------------------
+def clean_currency(value_str: str) -> float:
+    """Converts '$1,200.00' to 1200.0. Returns 0.0 on failure."""
+    if not value_str: return 0.0
+    try:
+        # Remove symbols, commas, and whitespace
+        clean = value_str.replace('$', '').replace(',', '').strip()
+        return float(clean)
+    except:
+        return 0.0
 
+def format_currency(value: float) -> str:
+    """Converts 1200.0 to '$1,200.00'"""
+    return f"${value:,.2f}"
+
+def calculate_row_total(fee_str: str, expense_str: str) -> str:
+    """Sum for a single row."""
+    total = clean_currency(fee_str) + clean_currency(expense_str)
+    return format_currency(total)
+
+def update_grand_total(table):
+    """
+    Recalculates the bottom-right cell by summing the 'Total' column 
+    of all rows except the Header (first) and Footer (last).
+    """
+    grand_total = 0.0
+    
+    # Loop through rows from Index 1 (skip header) to Index -1 (skip footer)
+    # We assume the last row is ALWAYS the Total row based on your image
+    data_rows = table.rows[1:-1]
+    
+    for row in data_rows:
+        # Column 4 is the "Total" column in your 5-col layout
+        if len(row.cells) >= 5:
+            val_text = row.cells[4].text
+            grand_total += clean_currency(val_text)
+            
+    # Update the last row's last cell
+    # (The footer row might have merged cells, but the value is usually in the last indexable cell)
+    last_row = table.rows[-1]
+    last_cell = last_row.cells[-1] 
+    last_cell.text = format_currency(grand_total)
+    
+    # Optional: Make it bold to match the image style
+    for paragraph in last_cell.paragraphs:
+        for run in paragraph.runs:
+            run.bold = True
+
+def insert_row_before_last(table):
+    """
+    Adds a new row to the table, but moves it to be BEFORE the last row.
+    Useful when the last row is a 'Total' summary row.
+    """
+    # 1. Create the new row (it defaults to the very bottom)
+    new_row = table.add_row()
+    
+    # 2. Get the XML element of the new row and the target (last) row
+    # The 'last' row is currently the one we just added (index -1)
+    # The 'summary' row is the one before it (index -2)
+    # We want to swap them essentially.
+    
+    # Actually, simpler logic:
+    # table.rows[-1] is the New Row
+    # table.rows[-2] is the Footer Row
+    # We want New Row to be before Footer Row.
+    
+    # Access the XML elements (_tr)
+    new_row_tr = table.rows[-1]._tr
+    footer_row_tr = table.rows[-2]._tr
+    
+    # Move new_row to be immediately preceding the footer
+    footer_row_tr.addprevious(new_row_tr)
+    
+    return new_row
+
+def normalize_date_to_dd_mmm_yyyy(DT: str) -> str:
+    if not DT:
+        raise ValueError("Empty date string")
+
+    DT = DT.strip()
+    pattern = r"^\d{2}-[A-Za-z]{3}-\d{4}$"
+    if re.match(pattern, DT):
+        return DT.upper()  
+
+    try:
+        dt = parser.parse(DT)
+        return dt.strftime("%d-%b-%Y").upper()
+    except Exception:
+        raise ValueError(f"Unsupported date format: {DT}")
+    
 # --------------------------------
 # 4. DUPLICATE CHECKERS
 # --------------------------------
@@ -203,24 +297,26 @@ async def draft_docx_od(
 
 @mcp.tool(
     name="draft_edit_docx_od",
-    description="Extend or Edit the 'Applicable Agreement' date in the latest version of the OD.",
+    description="Extend or Edit the 'Offer Valid Through' date in the latest version of the OD.",
 )
 async def draft_edit_docx_od(
     ctx: Context, 
     quote_number: Annotated[str, "The ID of the quote"], 
     date: Annotated[str, "The date in the format '28-AUG-2018'"],
 ):
+    
+    normalized_date = normalize_date_to_dd_mmm_yyyy(date)
+
     response = (
         supabase
         .table("SALES_CONTRACT")
         .select("VALUE")
         .eq("CPQ-NUMBER",quote_number)
-        .eq("SECTION","Applicable Agreement")
+        .eq("SECTION","Offer Valid through")
         .execute()
     )
     
     data = response.data
-    print(data[0]['VALUE'])
     current_date_doc = data[0]['VALUE']
 
     # 2. Get LATEST Version (Auto-resolution)
@@ -241,16 +337,19 @@ async def draft_edit_docx_od(
         for para in doc.paragraphs:
             text = para.text
 
-            # Step 1: Find "Applicable Agreement" (case-insensitive)
-            if not found_section and re.search(r"applicable\s+agreement", text, re.IGNORECASE):
+            # Step 1: Find "Offer Valid through" (case-insensitive)
+            if not found_section and re.search(r"offer\s+valid\s+through", text, re.IGNORECASE):
                 found_section = True
-                continue
+                if current_date_doc in text:
+                    para.text = text.replace(current_date_doc, normalized_date)
+                    replaced = True
+                break
 
             # Step 2: After section found, replace date
-            if found_section and not replaced and current_date_doc in text:
-                para.text = text.replace(current_date_doc, date)
-                replaced = True
-                break   # stop after first replacement
+            # if found_section and not replaced and current_date_doc in text:
+            #     para.text = text.replace(current_date_doc, normalized_date)
+            #     replaced = True
+            #     break   # stop after first replacement
         
         # Save & Upload
 
@@ -264,9 +363,9 @@ async def draft_edit_docx_od(
             response = (
                 supabase
                 .table("SALES_CONTRACT")
-                .update({"VALUE":date})
+                .update({"VALUE":normalized_date})
                 .eq("CPQ-NUMBER",quote_number)
-                .eq("SECTION","Applicable Agreement")
+                .eq("SECTION","Offer Valid through")
                 .execute()
             )
 
@@ -340,59 +439,134 @@ async def draft_edit_docx_od(
 #     except Exception as e:
 #         return {"content": [{"type": "text", "text": f"❌ Error: {str(e)}"}], "isError": True}
 
-
 @mcp.tool(
     name="add_line_item",
-    description="Add a row to the pricing table in the latest OD version.",
+    description="Add a service row to the 5-column Pricing Table (Service, Reference, Fees, Expenses, Total).",
 )
 async def add_line_item(
     ctx: Context, 
     quote_number: Annotated[str, "The ID of the quote"],
-    item_name: Annotated[str, "Name of service"], 
-    description: Annotated[str, "Description"], 
-    price: Annotated[str, "Price"]
+    
+    service_name: Annotated[str, "The text for 'Services' column. DO NOT GUESS."], 
+    reference: Annotated[str, "The text for 'Reference' column (e.g. 'Exhibit 1'). DO NOT GUESS."], 
+    fees: Annotated[str, "The 'Fees' amount (e.g. '$500.00'). DO NOT GUESS."],
+    estimated_expenses: Annotated[str, "The 'Estimated Expenses'"]
 ):
-    # --- 1. ROBUST PARAMETER CHECK (Replaces Elicitation) ---
-    # Since Cline doesn't support 'elicit', we just return a helpful message
-    if price == "0.00" or price == "$0.00" or price == "0" or price == "$0":
-        return "⚠️ Missing details. Please try again providing Item Name, Description, and Price."
-
-    if not all([item_name, description, price]):
+    
+    if fees == "0.00" or fees == "$0.00" or fees == "0" or fees == "$0":
+        return "⚠️ Missing details. Please try again providing Service Name, Reference, and Fees."
+    
+    # 1. Validation
+    # We allow expenses to be optional (defaults to $0.00), but others are mandatory
+    if not all([service_name, reference, fees]):
         missing = []
-        if not item_name: missing.append("item_name")
-        if not description: missing.append("description")
-        if not price: missing.append("price")
+        if not service_name: missing.append("service_name")
+        if not reference: missing.append("reference")
+        if not fees: missing.append("fees")
         
-        return f"⚠️ Missing details: {', '.join(missing)}. Please try again providing Item Name, Description, and Price."
+        return f"⚠️ Missing details: {', '.join(missing)}."
 
     # 2. Get File
     latest_name, stream = get_latest_file_content(quote_number)
     if not stream:
         return f"❌ Quote {quote_number} not found."
 
-    await ctx.info(f"Adding row '{item_name}' to {latest_name}")
+    await ctx.info(f"Adding service '{service_name}' to {latest_name}")
 
-    # 3. Edit
+    # 3. Edit Document
     try:
         doc = Document(stream)
         if not doc.tables: return "❌ No tables found in document."
         
-        if row_exists(doc, item_name, price):
-             return f"⚠️ Row '{item_name}' already exists in {latest_name}. No changes made."
+        table = doc.tables[3]
+        
+        if len(table.columns) < 5:
+            return f"❌ Table structure mismatch. Expected 5 columns, found {len(table.columns)}."
 
-        table = doc.tables[0]
-        row = table.add_row()
-        row.cells[0].text = item_name
-        row.cells[1].text = description
-        row.cells[2].text = price
+        # --- IDEMPOTENCY CHECK ---
+        if row_exists(doc, service_name, fees):
+             return f"⚠️ Row '{service_name}' already exists. No changes made."
 
+        # --- INSERTION LOGIC ---
+        # We use our custom helper to insert BEFORE the summary row
+        row = insert_row_before_last(table)
+        
+        # --- POPULATE DATA ---
+        row.cells[0].text = service_name
+        row.cells[1].text = reference
+        row.cells[2].text = fees
+        
+        final_expenses = estimated_expenses if estimated_expenses else "$0.00"
+        row.cells[3].text = final_expenses
+        
+        # Calculate Row Total
+        row_total = calculate_row_total(fees, final_expenses)
+        row.cells[4].text = row_total
+        
+        # --- RECALCULATE GRAND TOTAL ---
+        # Now that the row is inserted, we sum up everything to update the footer
+        update_grand_total(table)
+
+        # Save & Upload
         out = io.BytesIO()
         doc.save(out)
         public_url = upload_new_version(quote_number, out)
 
-        return f"✅ Added row '{item_name}'. View: {public_url}"
+        return f"✅ Added '{service_name}' | Row Total: {row_total}. Grand Total Updated. View: {public_url}"
+
     except Exception as e:
         return f"❌ Error: {str(e)}"
+    
+# async def add_line_item(
+#     ctx: Context, 
+#     quote_number: Annotated[str, "The ID of the quote"],
+#     service_name: Annotated[str, "Name of service"], 
+#     reference: Annotated[str, "Reference such as Exhibit 1, Exhibit 2, etc."], 
+#     fees: Annotated[str, "fees paid for the service such as $500.00"],
+#     estimated_expenses: Annotated[str, "estimated expenses such as $100.00"],
+
+# ):
+#     # --- 1. ROBUST PARAMETER CHECK (Replaces Elicitation) ---
+#     # Since Cline doesn't support 'elicit', we just return a helpful message
+#     if fees == "0.00" or fees == "$0.00" or fees == "0" or fees == "$0":
+#         return "⚠️ Missing details. Please try again providing Service Name, Reference, and Fees."
+
+#     if not all([item_name, description, price]):
+#         missing = []
+#         if not item_name: missing.append("item_name")
+#         if not description: missing.append("description")
+#         if not price: missing.append("price")
+        
+#         return f"⚠️ Missing details: {', '.join(missing)}. Please try again providing Item Name, Description, and Price."
+
+#     # 2. Get File
+#     latest_name, stream = get_latest_file_content(quote_number)
+#     if not stream:
+#         return f"❌ Quote {quote_number} not found."
+
+#     await ctx.info(f"Adding row '{item_name}' to {latest_name}")
+
+#     # 3. Edit
+#     try:
+#         doc = Document(stream)
+#         if not doc.tables: return "❌ No tables found in document."
+        
+#         if row_exists(doc, item_name, price):
+#              return f"⚠️ Row '{item_name}' already exists in {latest_name}. No changes made."
+
+#         table = doc.tables[2]
+#         row = table.add_row()
+#         row.cells[0].text = item_name
+#         row.cells[1].text = description
+#         row.cells[2].text = price
+
+#         out = io.BytesIO()
+#         doc.save(out)
+#         public_url = upload_new_version(quote_number, out)
+
+#         return f"✅ Added row '{item_name}'. View: {public_url}"
+#     except Exception as e:
+#         return f"❌ Error: {str(e)}"
     
     
 if __name__ == "__main__":
