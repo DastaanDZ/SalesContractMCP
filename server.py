@@ -447,10 +447,10 @@ async def add_line_item(
     ctx: Context, 
     quote_number: Annotated[str, "The ID of the quote"],
     
-    service_name: Annotated[str, "The text for 'Services' column. DO NOT GUESS."], 
-    reference: Annotated[str, "The text for 'Reference' column (e.g. 'Exhibit 1'). DO NOT GUESS."], 
-    fees: Annotated[str, "The 'Fees' amount (e.g. '$500.00'). DO NOT GUESS."],
-    estimated_expenses: Annotated[str, "The 'Estimated Expenses'"]
+    service_name: Annotated[str, "The text for 'Services' column. DO NOT GUESS this value if any other values are provided and explicitly ask user for this value if not provided explicitly."], 
+    reference: Annotated[str, "The text for 'Reference' column (e.g. 'Exhibit 1'). DO NOT GUESS this value if any other values are provided and explicitly ask user for this value if not provided explicitly."], 
+    fees: Annotated[str, "The 'Fees' amount (e.g. '$500.00'). DO NOT GUESS this value if any other values are provided and explicitly ask user for this value if not provided explicitly."],
+    estimated_expenses: Annotated[str, "The 'Estimated Expenses'. DO NOT GUESS this value if any other values are provided and explicitly ask user for this value if not provided explicitly."]
 ):
     
     if fees == "0.00" or fees == "$0.00" or fees == "0" or fees == "$0":
