@@ -46,42 +46,50 @@ def load_clauses():
     if not os.path.exists(CLAUSES_FILE): return {}
     with open(CLAUSES_FILE, "r") as f: return json.load(f)
 
+import re
+import io
+
 def get_latest_file_content(quote_number: str):
     """
-    Scans Supabase for all versions of the quote.
+    Scans Supabase for all versions of the document.
     Returns: (latest_filename, file_stream_bytes)
     """
     try:
         # List all files
         files = supabase.storage.from_(BUCKET_NAME).list()
         all_names = [f['name'] for f in files]
-        
-        # Filter for files belonging to this quote
-        # Matches: "100.docx", "100_v1.docx", "100_v10.docx"
-        pattern = re.compile(rf"^{re.escape(quote_number)}(_v(\d+))?\.docx$")
-        
+
+        # Matches:
+        pattern = re.compile(
+            rf"^{re.escape(quote_number)}(?:_v(\d+))?\.docx$",
+            re.IGNORECASE
+        )
+
         candidates = []
+
         for name in all_names:
             match = pattern.match(name)
             if match:
-                version_num = int(match.group(2)) if match.group(2) else 0
+                version_num = int(match.group(1)) if match.group(1) else 0
                 candidates.append((version_num, name))
-        
+
         if not candidates:
             return None, None
 
         # Sort by version number descending
         candidates.sort(key=lambda x: x[0], reverse=True)
         latest_filename = candidates[0][1]
-        
+
         # Download
         print(f"📥 Fetching latest version: {latest_filename}")
         res = supabase.storage.from_(BUCKET_NAME).download(latest_filename)
+
         return latest_filename, io.BytesIO(res)
 
     except Exception as e:
         print(f"Error fetching latest: {e}")
         return None, None
+
 
 def upload_new_version(quote_number: str, stream: io.BytesIO) -> str:
     """
